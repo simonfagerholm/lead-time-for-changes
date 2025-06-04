@@ -33,7 +33,7 @@ function Main ([string] $ownerRepo,
     $owner = $ownerRepoArray[0]
     $repo = $ownerRepoArray[1]
     $workflowsArray = $workflows -split ','
-    $numberOfDays = $numberOfDays        
+    $numberOfDays = $numberOfDays
     if ($commitCountingMethod -eq "")
     {
         $commitCountingMethod = "last"
@@ -43,35 +43,45 @@ function Main ([string] $ownerRepo,
     Write-Host "Workflows: $($workflowsArray[0])"
     Write-Host "Branch: $branch"
     Write-Host "Commit counting method '$commitCountingMethod' being used"
-
     #==========================================
     # Get authorization headers
     $authHeader = GetAuthHeader $patToken $actionsToken $appId $appInstallationId $appPrivateKey
 
-    #Get pull requests from the repo 
-    #https://developer.GitHub.com/v3/pulls/#list-pull-requests
-    $uri = "$apiUrl/repos/$owner/$repo/pulls?state=all&head=$branch&per_page=100&state=closed";
-    if (!$authHeader)
-    {
-        #No authentication
-        $prsResponse = Invoke-RestMethod -Uri $uri -ContentType application/json -Method Get -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+    #Get pull requests from the repo
+    $page = 1
+    $prsResponse = New-Object System.Collections.ArrayList
+    while(1) {
+        $date = (Get-Date).AddDays(-$numberOfDays).ToString("yyy-MM-dd")
+        $uri = "$apiUrl/search/issues?q=repo:$owner/$repo+is:pr+is:merged+base:$branch+merged:>$date&per_page=100&page=$page";
+        if (!$authHeader)
+        {
+            #No authentication
+            $batch = Invoke-RestMethod -Uri $uri -ContentType application/json -Method Get -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+        }
+        else
+        {
+            $batch = Invoke-RestMethod -Uri $uri -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+        }
+        if ($HTTPStatus -eq "404")
+        {
+            Write-Output "Repo is not found or you do not have access"
+            break
+        }
+        Foreach ($issue in $batch.items){
+            $prsResponse.Add($issue) | Out-Null
+        }
+        if($prsResponse.Count -ge $batch.total_count)
+        {
+            break
+        }
+        $page += 1
     }
-    else
-    {
-        $prsResponse = Invoke-RestMethod -Uri $uri -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus" 
-    }
-    if ($HTTPStatus -eq "404")
-    {
-        Write-Output "Repo is not found or you do not have access"
-        break
-    }  
 
     $prCounter = 0
     $totalPRHours = 0
     Foreach ($pr in $prsResponse){
-
-        $mergedAt = $pr.merged_at
-        if ($mergedAt -ne $null -and $pr.merged_at -gt (Get-Date).AddDays(-$numberOfDays))
+        $mergedAt = $pr.pull_request.merged_at
+        if ($null -ne $mergedAt -and $mergedAt -gt (Get-Date).AddDays(-$numberOfDays))
         {
             $prCounter++
             $url2 = "$apiUrl/repos/$owner/$repo/pulls/$($pr.number)/commits?per_page=100";
@@ -82,7 +92,7 @@ function Main ([string] $ownerRepo,
             }
             else
             {
-                $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus" 
+                $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
             }
             if ($prCommitsresponse.Length -ge 1)
             {
@@ -99,8 +109,8 @@ function Main ([string] $ownerRepo,
                     Write-Output "Commit counting method '$commitCountingMethod' is unknown. Expecting 'first' or 'last'"
                 }
             }
-        
-            if ($startDate -ne $null)
+
+            if ($null -ne $startDate)
             {
                 $prTimeDuration = New-TimeSpan –Start $startDate –End $mergedAt
                 $totalPRHours += $prTimeDuration.TotalHours
@@ -118,13 +128,13 @@ function Main ([string] $ownerRepo,
     }
     else  #there is authentication
     {
-        $workflowsResponse = Invoke-RestMethod -Uri $uri3 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus" 
+        $workflowsResponse = Invoke-RestMethod -Uri $uri3 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
     }
     if ($HTTPStatus -eq "404")
     {
         Write-Output "Repo is not found or you do not have access"
         break
-    }  
+    }
 
     #Extract workflow ids from the definitions, using the array of names. Number of Ids should == number of workflow names
     $workflowIds = [System.Collections.ArrayList]@()
@@ -150,13 +160,13 @@ function Main ([string] $ownerRepo,
     #==========================================
     #Filter out workflows that were successful. Measure the number by date/day. Aggegate workflows together
     $workflowList = @()
-    
+
     #For each workflow id, get the last 100 workflows from github
     Foreach ($workflowId in $workflowIds){
-        #set workflow counters    
+        #set workflow counters
         $workflowCounter = 0
         $totalWorkflowHours = 0
-        
+
         #Get workflow definitions from github
         $uri4 = "$apiUrl/repos/$owner/$repo/actions/workflows/$workflowId/runs?per_page=100&status=completed"
         if (!$authHeader)
@@ -165,7 +175,7 @@ function Main ([string] $ownerRepo,
         }
         else
         {
-            $workflowRunsResponse = Invoke-RestMethod -Uri $uri4 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"      
+            $workflowRunsResponse = Invoke-RestMethod -Uri $uri4 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
         }
 
         Foreach ($run in $workflowRunsResponse.workflow_runs){
@@ -173,24 +183,24 @@ function Main ([string] $ownerRepo,
             if ($run.head_branch -eq $branch -and $run.created_at -gt (Get-Date).AddDays(-$numberOfDays))
             {
                 #Write-Host "Adding item with status $($run.status), branch $($run.head_branch), created at $($run.created_at), compared to $((Get-Date).AddDays(-$numberOfDays))"
-                $workflowCounter++       
-                #calculate the workflow duration            
+                $workflowCounter++
+                #calculate the workflow duration
                 $workflowDuration = New-TimeSpan –Start $run.created_at –End $run.updated_at
-                $totalworkflowHours += $workflowDuration.TotalHours    
+                $totalworkflowHours += $workflowDuration.TotalHours
             }
         }
-        
+
         #Save the workflow duration working per workflow
         if ($workflowCounter -gt 0)
-        {             
-            $workflowList += New-Object PSObject -Property @{totalworkflowHours=$totalworkflowHours;workflowCounter=$workflowCounter}                
+        {
+            $workflowList += New-Object PSObject -Property @{totalworkflowHours=$totalworkflowHours;workflowCounter=$workflowCounter}
         }
     }
 
     #==========================================
     #Prevent divide by zero errors
     if ($prCounter -eq 0)
-    {   
+    {
         $prCounter = 1
     }
     $totalAverageworkflowHours = 0
@@ -201,8 +211,8 @@ function Main ([string] $ownerRepo,
         }
         $totalAverageworkflowHours += $workflowItem.totalworkflowHours / $workflowItem.workflowCounter
     }
-    
-    #Aggregate the PR and workflow processing times to calculate the average number of hours 
+
+    #Aggregate the PR and workflow processing times to calculate the average number of hours
     Write-Host "PR average time duration $($totalPRHours / $prCounter)"
     Write-Host "Workflow average time duration $($totalAverageworkflowHours)"
     $leadTimeForChangesInHours = ($totalPRHours / $prCounter) + ($totalAverageworkflowHours)
@@ -218,7 +228,7 @@ function Main ([string] $ownerRepo,
     else
     {
         $rateLimitResponse = Invoke-RestMethod -Uri $uri5 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
-    }    
+    }
     Write-Host "Rate limit consumption: $($rateLimitResponse.rate.used) / $($rateLimitResponse.rate.limit)"
 
     #==========================================
@@ -228,7 +238,7 @@ function Main ([string] $ownerRepo,
     $monthlyDeployment = 24 * 30
     $everySixMonthsDeployment = 24 * 30 * 6 #Every 6 months
 
-    #Calculate rating, metric and unit  
+    #Calculate rating, metric and unit
     if ($leadTimeForChangesInHours -le 0)
     {
         $rating = "None"
@@ -236,14 +246,14 @@ function Main ([string] $ownerRepo,
         $displayMetric = 0
         $displayUnit = "hours"
     }
-    elseif ($leadTimeForChangesInHours -lt 1) 
+    elseif ($leadTimeForChangesInHours -lt 1)
     {
         $rating = "Elite"
         $color = "brightgreen"
         $displayMetric = [math]::Round($leadTimeForChangesInHours * 60, 2)
         $displayUnit = "minutes"
     }
-    elseif ($leadTimeForChangesInHours -le $dailyDeployment) 
+    elseif ($leadTimeForChangesInHours -le $dailyDeployment)
     {
         $rating = "Elite"
         $color = "brightgreen"
@@ -294,7 +304,7 @@ function Main ([string] $ownerRepo,
 #Generate the authorization header for the PowerShell call to the GitHub API
 #warning: PowerShell has really wacky return semantics - all output is captured, and returned
 #reference: https://stackoverflow.com/questions/10286164/function-return-value-in-powershell
-function GetAuthHeader ([string] $patToken, [string] $actionsToken, [string] $appId, [string] $appInstallationId, [string] $appPrivateKey) 
+function GetAuthHeader ([string] $patToken, [string] $actionsToken, [string] $appId, [string] $appInstallationId, [string] $appPrivateKey)
 {
     #Clean the string - without this the PAT TOKEN doesn't process
     $patToken = $patToken.Trim()
@@ -310,18 +320,18 @@ function GetAuthHeader ([string] $patToken, [string] $actionsToken, [string] $ap
     }
     elseif (![string]::IsNullOrEmpty($actionsToken))
     {
-        Write-Host "Authentication detected: GITHUB TOKEN"  
+        Write-Host "Authentication detected: GITHUB TOKEN"
         $authHeader = @{Authorization=("Bearer {0}" -f $actionsToken)}
     }
     elseif (![string]::IsNullOrEmpty($appId)) # GitHup App auth
     {
-        Write-Host "Authentication detected: GITHUB APP TOKEN"  
-        $token = Get-JwtToken $appId $appInstallationId $appPrivateKey        
+        Write-Host "Authentication detected: GITHUB APP TOKEN"
+        $token = Get-JwtToken $appId $appInstallationId $appPrivateKey
         $authHeader = @{Authorization=("token {0}" -f $token)}
-    }    
+    }
     else
     {
-        Write-Host "No authentication detected" 
+        Write-Host "No authentication detected"
         $base64AuthInfo = $null
         $authHeader = $null
     }
@@ -330,7 +340,7 @@ function GetAuthHeader ([string] $patToken, [string] $actionsToken, [string] $ap
 }
 
 function ConvertTo-Base64UrlString(
-    [Parameter(Mandatory=$true,ValueFromPipeline=$true)]$in) 
+    [Parameter(Mandatory=$true,ValueFromPipeline=$true)]$in)
 {
     if ($in -is [string]) {
         return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($in)) -replace '\+','-' -replace '/','_' -replace '='
@@ -370,7 +380,7 @@ function Get-JwtToken([string] $appId, [string] $appInstallationId, [string] $ap
     $jwt = $base64Header + '.' + $base64Payload
     $toSign = [System.Text.Encoding]::UTF8.GetBytes($jwt)
 
-    $rsa = [System.Security.Cryptography.RSA]::Create();    
+    $rsa = [System.Security.Cryptography.RSA]::Create();
     # https://stackoverflow.com/a/70132607 lead to the right import
     $rsa.ImportRSAPrivateKey([System.Convert]::FromBase64String($appPrivateKey), [ref] $null);
 
@@ -395,9 +405,9 @@ function GetFormattedMarkdown([array] $workflowNames, [string] $rating, [string]
     #double newline to start the line helps with formatting in GitHub logs
     $markdown = "`n`n![Lead time for changes](https://img.shields.io/badge/frequency-" + $encodedString + "-" + $color + "?logo=github&label=Lead%20time%20for%20changes)`n" +
         "**Definition:** For the primary application or service, how long does it take to go from code committed to code successfully running in production.`n" +
-        "**Results:** Lead time for changes is **$displayMetric $displayUnit** with a **$rating** rating, over the last **$numberOfDays days**.`n" + 
-        "**Details**:`n" + 
-        "- Repository: $repo using $branch branch`n" + 
+        "**Results:** Lead time for changes is **$displayMetric $displayUnit** with a **$rating** rating, over the last **$numberOfDays days**.`n" +
+        "**Details**:`n" +
+        "- Repository: $repo using $branch branch`n" +
         "- Workflow(s) used: $($workflowNames -join ", ")`n" +
         "---"
     return $markdown
@@ -407,7 +417,7 @@ function GetFormattedMarkdownForNoResult([string] $workflows, [string] $numberOf
 {
     #double newline to start the line helps with formatting in GitHub logs
     $markdown = "`n`n![Lead time for changes](https://img.shields.io/badge/frequency-none-lightgrey?logo=github&label=Lead%20time%20for%20changes)`n`n" +
-        "No data to display for $ownerRepo over the last $numberOfDays days`n`n" + 
+        "No data to display for $ownerRepo over the last $numberOfDays days`n`n" +
         "---"
     return $markdown
 }

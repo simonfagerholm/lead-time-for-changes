@@ -51,7 +51,7 @@ function Main ([string] $ownerRepo,
     $page = 1
     $prsResponse = New-Object System.Collections.ArrayList
     while(1) {
-        $date = (Get-Date).AddDays(-$numberOfDays).ToString("yyy-MM-dd")
+        $date = (Get-Date).AddDays(-$numberOfDays).ToString("yyyy-MM-dd")
         $uri = "$apiUrl/search/issues?q=repo:$owner/$repo+is:pr+is:merged+base:$branch+merged:>$date&per_page=100&page=$page";
         if (!$authHeader)
         {

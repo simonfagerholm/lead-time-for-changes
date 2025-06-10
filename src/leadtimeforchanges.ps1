@@ -70,8 +70,13 @@ function Main ([string] $ownerRepo,
         Foreach ($issue in $batch.items){
             $prsResponse.Add($issue) | Out-Null
         }
-        if($prsResponse.Count -ge $batch.total_count)
-        {
+        if ($batch.items.Count -eq 0) {
+            break
+        }
+        if (($page * 100) -ge $batch.total_count) {
+            break
+        }
+        if ($prsResponse.Count -ge $batch.total_count) {
             break
         }
         $page += 1

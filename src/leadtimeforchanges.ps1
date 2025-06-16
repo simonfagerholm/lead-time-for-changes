@@ -50,9 +50,8 @@ function Main ([string] $ownerRepo,
     #Get pull requests from the repo
     $page = 1
     $prsResponse = New-Object System.Collections.ArrayList
-    while(1) {
-        $date = (Get-Date).AddDays(-$numberOfDays).ToString("yyyy-MM-dd")
-        $uri = "$apiUrl/search/issues?q=repo:$owner/$repo+is:pr+is:merged+base:$branch+merged:>$date&per_page=100&page=$page";
+    :pageLoop while(1) {
+        $uri = "$apiUrl/repos/$owner/$repo/pulls?sort=updated&direction=desc&head=$branch&state=closed&per_page=100&page=$page"
         if (!$authHeader)
         {
             #No authentication
@@ -67,16 +66,26 @@ function Main ([string] $ownerRepo,
             Write-Output "Repo is not found or you do not have access"
             break
         }
-        Foreach ($issue in $batch.items){
+        Foreach ($issue in $batch){
+            if($null -eq $issue.merged_at)
+            {
+                # Was closed without merge
+                continue
+            }
+            if ($issue.updated_at -lt (Get-Date).AddDays(-$numberOfDays))
+            {
+                # We have added all PRs after the date we wanted, lets stop
+                break pageLoop
+            }
+            
+            if ($issue.merged_at -lt (Get-Date).AddDays(-$numberOfDays))
+            {
+                # This PR was updated after it was merged and the merge happened earlier than the date we wanted
+                continue
+            }
             $prsResponse.Add($issue) | Out-Null
         }
-        if ($batch.items.Count -eq 0) {
-            break
-        }
-        if (($page * 100) -ge $batch.total_count) {
-            break
-        }
-        if ($prsResponse.Count -ge $batch.total_count) {
+        if ($batch.Length -eq 0) {
             break
         }
         $page += 1
@@ -85,42 +94,38 @@ function Main ([string] $ownerRepo,
     $prCounter = 0
     $totalPRHours = 0
     Foreach ($pr in $prsResponse){
-        $mergedAt = $pr.pull_request.merged_at
-        if ($null -ne $mergedAt -and $mergedAt -gt (Get-Date).AddDays(-$numberOfDays))
+        $prCounter++
+        $url2 = "$apiUrl/repos/$owner/$repo/pulls/$($pr.number)/commits?per_page=250";
+        if (!$authHeader)
         {
-            $prCounter++
-            $url2 = "$apiUrl/repos/$owner/$repo/pulls/$($pr.number)/commits?per_page=100";
-            if (!$authHeader)
+            #No authentication
+            $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+        }
+        else
+        {
+            $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+        }
+        if ($prCommitsresponse.Length -ge 1)
+        {
+            if ($commitCountingMethod -eq "last")
             {
-                #No authentication
-                $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+                $startDate = $prCommitsresponse[$prCommitsresponse.Length-1].commit.committer.date
+            }
+            elseif ($commitCountingMethod -eq "first")
+            {
+                $startDate = $prCommitsresponse[0].commit.committer.date
             }
             else
             {
-                $prCommitsresponse = Invoke-RestMethod -Uri $url2 -ContentType application/json -Method Get -Headers @{Authorization=($authHeader["Authorization"])} -SkipHttpErrorCheck -StatusCodeVariable "HTTPStatus"
+                Write-Output "Commit counting method '$commitCountingMethod' is unknown. Expecting 'first' or 'last'"
             }
-            if ($prCommitsresponse.Length -ge 1)
-            {
-                if ($commitCountingMethod -eq "last")
-                {
-                    $startDate = $prCommitsresponse[$prCommitsresponse.Length-1].commit.committer.date
-                }
-                elseif ($commitCountingMethod -eq "first")
-                {
-                    $startDate = $prCommitsresponse[0].commit.committer.date
-                }
-                else
-                {
-                    Write-Output "Commit counting method '$commitCountingMethod' is unknown. Expecting 'first' or 'last'"
-                }
-            }
+        }
 
-            if ($null -ne $startDate)
-            {
-                $prTimeDuration = New-TimeSpan –Start $startDate –End $mergedAt
-                $totalPRHours += $prTimeDuration.TotalHours
-                #Write-Host "$($pr.number) time duration in hours: $($prTimeDuration.TotalHours)"
-            }
+        if ($null -ne $startDate)
+        {
+            $prTimeDuration = New-TimeSpan –Start $startDate –End $pr.merged_at
+            $totalPRHours += $prTimeDuration.TotalHours
+            #Write-Host "$($pr.number) time duration in hours: $($prTimeDuration.TotalHours)"
         }
     }
 
